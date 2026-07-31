@@ -14,6 +14,14 @@ public static partial class ServiceCollectionExtensions
         // 三个均为 Singleton，初始化极轻量（L3.3 为懒加载，1.2KB 内置黑洞列表）
         // 绝不阻塞启动；真正的工作是在 YARP 第一次转发 DNS 时才触发。
         services.AddSingleton<DnsFingerprintAnchor>();
+
+        // -- Phase 3/5 新增: L3.1 扩展 ASN 黑名单 (450 种子 + Team Cymru/BGPView) + L3.2 扩展 DNSSEC 加权 --
+        //     注册为 Singleton: 复用内部 LookupClient 缓存 + ASN ConcurrentDictionary 24h TTL
+        //     这里 TryAdd* 方式防止用户自定义覆盖:
+        services.TryAddSingleton<AsnBlacklist>();
+        services.TryAddSingleton<DnsSecVerifier>();
+
+        // DnsResultVerifier 依赖上方 2 个可选服务 (参数可空)
         services.AddSingleton<DnsResultVerifier>();
         services.AddSingleton<DnsParallelResolver>();
 

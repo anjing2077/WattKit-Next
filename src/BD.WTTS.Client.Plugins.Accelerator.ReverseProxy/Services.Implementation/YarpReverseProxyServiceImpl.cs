@@ -20,8 +20,12 @@ sealed partial class YarpReverseProxyServiceImpl : ReverseProxyServiceImpl, IRev
         DnsParallelResolver dnsParallelResolver,
         DnsResultVerifier dnsResultVerifier,
         ILoggerFactory loggerFactory,
-        ICertificateManager certificateManager)
-        : base(dnsAnalysisServiceImpl, dnsDohAnalysisService, dnsParallelResolver, dnsResultVerifier, loggerFactory)
+        ICertificateManager certificateManager,
+        // -- Phase 3/5 新增: L3.1 AsnBlacklist(可选) + L3.2 DnsSecVerifier(可选) --
+        AsnBlacklist? asnBlacklist = null,
+        DnsSecVerifier? dnsSecVerifier = null)
+        : base(dnsAnalysisServiceImpl, dnsDohAnalysisService, dnsParallelResolver, dnsResultVerifier,
+               asnBlacklist, dnsSecVerifier, loggerFactory)
     {
         this.ipc = ipc;
         platformService = GetIPCService<IPCPlatformService>(nameof(platformService));

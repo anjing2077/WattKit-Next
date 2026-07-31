@@ -35,6 +35,10 @@ internal sealed class DnsSecurityVerdict
 
 /// <summary>
 /// L3 验证器：3 层过滤器 + 与指纹锚点协作
+/// Phase 3/5 扩展:
+///   - L3.1 扩展: 注入可选 AsnBlacklist(450 种子 ASN + Team Cymru/BGPView 双源), 命中种子 -> MaliciousBlock
+///   - L3.2 扩展: 注入可选 DnsSecVerifier(DNSSEC RRSIG/DNSKEY/DS 查询 -> 加权票), 权重 0/1/2
+/// 两个扩展均为可选, DI 容器没有注册也不报错, 保证 Phase 2 原有契约零破坏.
 /// </summary>
 internal sealed class DnsResultVerifier
 {
@@ -44,25 +48,33 @@ internal sealed class DnsResultVerifier
     static readonly (IPNetwork Net, string Desc)[] BuiltinBlacklistNetworks = BuildBuiltinBlacklist();
 
     readonly DnsFingerprintAnchor _anchor;
+    readonly AsnBlacklist? _asn;       // Phase 3/5: 可选注入 (L3.1 扩展 ASN 黑名单)
+    readonly DnsSecVerifier? _dnssec;  // Phase 3/5: 可选注入 (L3.2 扩展 DNSSEC 加权)
 
-    public DnsResultVerifier(DnsFingerprintAnchor anchor)
+    public DnsResultVerifier(
+        DnsFingerprintAnchor anchor,
+        AsnBlacklist? asnBlacklist = null,
+        DnsSecVerifier? dnsSecVerifier = null)
     {
         _anchor = anchor;
+        _asn = asnBlacklist;
+        _dnssec = dnsSecVerifier;
     }
 
     /// <summary>
-    /// 3 层过滤主入口。
+    /// 3 层过滤主入口（Phase 3/5 升级为异步, 以支持 ASN 查询 + DNSSEC 加权; DnsSecurityGuard 调用方已 await, 无需改动）
     /// 设计约束：
     ///   - 绝不抛出异常（任何异常 → 回退黄 + 建议空数组）
     ///   - 参数 domain 用于 L3.3 锚点查找；允许空（此时跳过 L3.3，只做 L3.1+L3.2）
     /// </summary>
-    public DnsSecurityVerdict Verify(
+    public async Task<DnsSecurityVerdict> VerifyAsync(
         string? domain,
-        DnsChannelResult[] channels)
+        DnsChannelResult[] channels,
+        CancellationToken ct = default)
     {
         try
         {
-            return VerifyCore(domain, channels);
+            return await VerifyCoreAsync(domain, channels, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -76,19 +88,78 @@ internal sealed class DnsResultVerifier
         }
     }
 
-    DnsSecurityVerdict VerifyCore(string? domain, DnsChannelResult[] channels)
+    // 兼容 Phase 2 旧契约 (DnsSecurityGuard 原调用 .Verify(...))
+    public DnsSecurityVerdict Verify(string? domain, DnsChannelResult[] channels)
+        => VerifyAsync(domain, channels, CancellationToken.None).GetAwaiter().GetResult();
+
+    async Task<DnsSecurityVerdict> VerifyCoreAsync(string? domain, DnsChannelResult[] channels, CancellationToken ct)
     {
         channels ??= Array.Empty<DnsChannelResult>();
         var blocked = new List<IPAddress>(capacity: 4);
+        bool asnHardBlock = false;
+        string? asnBlockReason = null;
 
-        // —— L3.1 黑名单过滤器：对每个通道的 IP 先做 RFC 保留段过滤 ——
+        // —— Phase 3/5 L3.1 扩展: 对每个 IP 先做 ASN 450 种子命中检查 (Team Cymru/BGPView 异步懒查) ——
+        //    命中种子 -> 直接 MaliciousBlock (Tor 出口 / C&C / 恶意代理 VPS)
+        var asnHits = new Dictionary<UInt128, AsnCheckResult>();
+        if (_asn != null)
+        {
+            // 收集所有唯一 IP -> 并发批量查 (控制并发 8)
+            var uniqueIps = channels.SelectMany(c => c.Addresses).Distinct().ToArray();
+            using var sem = new SemaphoreSlim(8, 8);
+            var tasks = new List<Task<(IPAddress Ip, AsnCheckResult Res)>>(uniqueIps.Length);
+            foreach (var ip in uniqueIps)
+            {
+                tasks.Add(Task.Run(async () =>
+                {
+                    await sem.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        return (ip, await _asn.CheckAsync(ip, ct).ConfigureAwait(false));
+                    }
+                    finally
+                    {
+                        sem.Release();
+                    }
+                }, ct));
+            }
+            foreach (var t in tasks)
+            {
+                try
+                {
+                    var (ip, res) = await t.ConfigureAwait(false);
+                    var key = AsnIpToKey(ip);
+                    asnHits[key] = res;
+                    if (res.Blocked)
+                    {
+                        asnHardBlock = true;
+                        asnBlockReason = res.Reason;
+                    }
+                }
+                catch
+                {
+                    // 单个 IP ASN 查询失败 -> 忽略 (仍然用 bogon + 投票)
+                }
+            }
+        }
+
+        // —— L3.1 黑名单过滤器：对每个通道的 IP 先做 RFC 保留段过滤 + Phase 3/5 ASN 过滤 ——
         var cleanChannels = channels.Select(ch =>
         {
             var kept = new List<IPAddress>(ch.Addresses.Length);
             foreach (var ip in ch.Addresses)
             {
-                if (IsBlocklisted(ip)) blocked.Add(ip);
-                else kept.Add(ip);
+                if (IsBlocklisted(ip))
+                {
+                    blocked.Add(ip);
+                    continue;
+                }
+                if (_asn != null && asnHits.TryGetValue(AsnIpToKey(ip), out var r) && r.Blocked)
+                {
+                    blocked.Add(ip); // 加入 blocked 集合用于 UI 告警
+                    continue;
+                }
+                kept.Add(ip);
             }
             return new DnsChannelResult
             {
@@ -98,7 +169,21 @@ internal sealed class DnsResultVerifier
             };
         }).ToArray();
 
-        // —— L3.2 多数投票过滤器：统计每个 IP 在多少个成功通道中出现 ——
+        // —— Phase 3/5 L3.2 扩展: DNSSEC 加权 (RRSIG + DNSKEY 存在 -> 每个 IP 增加 0/1/2 票) ——
+        int dnssecWeight = 0;
+        if (_dnssec != null && !string.IsNullOrWhiteSpace(domain))
+        {
+            try
+            {
+                dnssecWeight = await _dnssec.GetTrustWeightAsync(domain, null, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                dnssecWeight = 0;
+            }
+        }
+
+        // —— L3.2 多数投票过滤器：统计每个 IP 在多少个成功通道中出现 + DNSSEC 加权 ——
         var ipVote = new Dictionary<string, (IPAddress Ip, int Votes, List<string> Channels)>(StringComparer.Ordinal);
         int quorum = 0;
         foreach (var ch in cleanChannels)
@@ -112,7 +197,7 @@ internal sealed class DnsResultVerifier
                 if (!seenThisChannel.Add(key)) continue; // 同一通道重复 IP 只算 1 票
                 if (!ipVote.TryGetValue(key, out var slot))
                 {
-                    slot = (ip, 0, new List<string>());
+                    slot = (ip, dnssecWeight, new List<string>());
                     ipVote[key] = slot;
                 }
                 slot.Votes++;
@@ -122,8 +207,9 @@ internal sealed class DnsResultVerifier
 
         // 最终候选 = 得到过半数票的 IP；若所有通道失败则回退 0 IP
         IPAddress[] majorityIps;
-        int majorityThreshold = quorum <= 1 ? 1 : (quorum / 2) + 1;
-        if (quorum == 0)
+        int adjustedQuorum = quorum + dnssecWeight; // 把 DNSSEC 权重也算入 quorum, 避免强签名域被误判
+        int majorityThreshold = adjustedQuorum <= 1 ? 1 : (adjustedQuorum / 2) + 1;
+        if (quorum == 0 && !asnHardBlock)
         {
             majorityIps = Array.Empty<IPAddress>();
         }
@@ -143,13 +229,28 @@ internal sealed class DnsResultVerifier
             }
         }
 
+        // —— Phase 3/5 ASN 硬拦截优先: 命中 450 种子即 MaliciousBlock (不管票数, 直接阻) ——
+        if (asnHardBlock)
+        {
+            return new DnsSecurityVerdict
+            {
+                Overall = DnsVerdict.MaliciousBlock,
+                RecommendedIps = Array.Empty<IPAddress>(),
+                BlocklistedIps = blocked.ToArray(),
+                ChannelSnapshots = cleanChannels,
+                VotingQuorum = quorum,
+                Diagnostic = $"ASN-SEED-HIT reason={asnBlockReason} blocked={blocked.Count}",
+            };
+        }
+
         // —— L3.3 指纹锚点对比 ——
         DnsVerdict overall;
         string? diag;
         if (!string.IsNullOrWhiteSpace(domain) && majorityIps.Length > 0)
         {
             overall = _anchor.JudgeAgainstAnchor(domain, majorityIps);
-            diag = $"quorum={quorum},threshold={majorityThreshold},ips={majorityIps.Length},anchor={overall}";
+            string dnssecStr = dnssecWeight > 0 ? $",dnssecWeight={dnssecWeight}" : "";
+            diag = $"quorum={quorum},threshold={majorityThreshold},ips={majorityIps.Length},anchor={overall}{dnssecStr}";
         }
         else if (blocked.Count > 0)
         {
@@ -236,5 +337,20 @@ internal sealed class DnsResultVerifier
             catch { /* 忽略解析错误，保证启动健壮 */ }
         }
         return list.ToArray();
+    }
+
+    // 与 AsnBlacklist.IpToKey 对齐的缓存 Key 计算
+    static UInt128 AsnIpToKey(IPAddress ip)
+    {
+        var b = ip.GetAddressBytes();
+        if (b.Length <= 8)
+        {
+            UInt128 k = 0;
+            for (int i = 0; i < b.Length; i++) k = (k << 8) | b[i];
+            return k;
+        }
+        UInt128 r = 0;
+        for (int i = 0; i < 16; i++) r = (r << 8) | b[i];
+        return r;
     }
 }

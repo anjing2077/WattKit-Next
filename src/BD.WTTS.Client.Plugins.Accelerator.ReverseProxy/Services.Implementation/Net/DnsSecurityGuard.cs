@@ -58,7 +58,10 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
         {
             var channels = await _parallel.QueryAllAsync(hostNameOrAddress, isIPv6, cancellationToken)
                 .ConfigureAwait(false);
-            verdict = _verifier.Verify(hostNameOrAddress, channels);
+            // Phase 3/5: 改用 VerifyAsync 以支持 ASN TeamCymru/BGPView 查询 + DNSSEC 权重查询
+            // (保留 Verify 同步兼容调用, 这里用 await 版是为了传 ct + 更好的线程切换)
+            verdict = await _verifier.VerifyAsync(hostNameOrAddress, channels, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
