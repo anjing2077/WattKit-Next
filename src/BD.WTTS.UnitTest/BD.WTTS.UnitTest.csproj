@@ -37,6 +37,25 @@
 		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator.ReverseProxy\Services\Net\IDnsAnalysisService.Constants.cs">
 			<LinkBase>Services\Net</LinkBase>
 		</Compile>
+		<!-- DNS 污染防护测试目标源文件 -->
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator.ReverseProxy\Services.Implementation\Net\DnsWireCodec.cs">
+			<LinkBase>Services.Implementation\Net</LinkBase>
+		</Compile>
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator.ReverseProxy\Services.Implementation\Net\DnsParallelResolver.cs">
+			<LinkBase>Services.Implementation\Net</LinkBase>
+		</Compile>
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator.ReverseProxy\Services.Implementation\Net\DnsResultVerifier.cs">
+			<LinkBase>Services.Implementation\Net</LinkBase>
+		</Compile>
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator.ReverseProxy\Services.Implementation\Net\DnsFingerprintAnchor.cs">
+			<LinkBase>Services.Implementation\Net</LinkBase>
+		</Compile>
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator\DnsSecurity\DnsVerdict.cs">
+			<LinkBase>DnsSecurity</LinkBase>
+		</Compile>
+		<Compile Include="..\BD.WTTS.Client.Plugins.Accelerator\DnsSecurity\IDnsParallelResolver.cs">
+			<LinkBase>DnsSecurity</LinkBase>
+		</Compile>
 	</ItemGroup>
 
 	<ItemGroup>
