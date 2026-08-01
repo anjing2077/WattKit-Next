@@ -6,6 +6,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:ms="https://steampp.net/settings"
     xmlns:s="https://steampp.net/services"
+    x:CompileBindings="True"
     xmlns:spp="https://steampp.net/ui"
     xmlns:sys="using:System"
     xmlns:ui="using:FluentAvalonia.UI.Controls"

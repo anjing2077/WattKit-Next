@@ -57,6 +57,21 @@ partial class Startup // OnStartup
             });
         }
 #endif
+        // 启动预热: 机器密钥 (SecureStorage IO) 后台异步化
+        // IPlatformService.MachineSecretKey 第一次访问会触发 SecureStorage 读写，
+        // 原本使用同步 Lazy + RunSync() 阻塞 UI。现在改成 Lazy<Task<>> + 这里后台 FireAndForget，
+        // 后续用户真正访问到该属性时，Task 已经完成不会再阻塞。
+        Task2.InBackground(async static () =>
+        {
+            try
+            {
+                await Ioc.Get<Services.IPlatformService>().GetMachineSecretKeyAsync();
+            }
+            catch (Exception ex)
+            {
+                GlobalExceptionHandler.Handler(ex, "StartupOpt.MachineSecretKeyPreheat");
+            }
+        });
     }
 
     public virtual void OnStartup()

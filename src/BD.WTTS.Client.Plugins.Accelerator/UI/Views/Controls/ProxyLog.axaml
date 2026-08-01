@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:s="https://steampp.net/services"
+    x:CompileBindings="True"
     xmlns:spp="https://steampp.net/ui"
     d:DesignHeight="450"
     d:DesignWidth="800"
