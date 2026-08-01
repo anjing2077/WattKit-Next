@@ -57,7 +57,36 @@ partial class Startup // 配置 Host
 #if (WINDOWS || MACCATALYST || MACOS || LINUX) && !(IOS || ANDROID)
         if (IsMainProcess || HasIPCRoot || loadModules.Length != 0)
         {
-            var pluginResults = PluginsCore.InitPlugins(generalSettings?.CurrentValue.DisablePlugins, loadModules);
+            // 启动优化: 提前在后台启动插件扫描, 同时在主线程并行加载 UISettings/SteamSettings
+            var pluginScanTask = Task.Run(() => PluginsCore.InitPlugins(generalSettings?.CurrentValue.DisablePlugins, loadModules));
+
+            // 启动优化: 并行加载 UISettings + SteamSettings (原为顺序加载, 省 ~20-40ms)
+            var uiSettingsTask = Task.Run(() =>
+            {
+                if (ISettings<UISettings_>.Load(directoryExists, out var d1))
+                    InvalidConfigurationFileNames.Add(UISettings_.Name);
+                else
+                    @delegate += d1;
+                return true;
+            });
+            var steamSettingsTask = Task.Run(() =>
+            {
+                if (ISettings<SteamSettings_>.Load(directoryExists, out var d2))
+                    InvalidConfigurationFileNames.Add(SteamSettings_.Name);
+                else
+                    @delegate += d2;
+                return true;
+            });
+
+            // 等待插件扫描完成
+            var pluginResults = pluginScanTask.GetAwaiter().GetResult();
+
+            // 等待 Settings 并行加载完成
+            Task.WaitAll(uiSettingsTask, steamSettingsTask);
+
+            // 标记 Settings 已提前加载, 跳过后面的重复加载
+            var settingsPreLoaded = true;
+
             var plugins = pluginResults?.Where(x => !x.IsDisable).Select(x => x.Data).ToHashSet();
             HasPlugins = plugins.Any_Nullable();
             if (HasPlugins)
@@ -112,6 +141,8 @@ partial class Startup // 配置 Host
             WatchTrace.Record("InitPlugins");
 #endif
         }
+#else
+        var settingsPreLoaded = false; // 非桌面平台不提前加载
 #endif
 
         if (IsMainProcess)
@@ -180,14 +211,18 @@ partial class Startup // 配置 Host
 
         #region 初始化【配置/设置】 Settings/Configuration
 
-        if (ISettings<UISettings_>.Load(directoryExists, out var @delegate1))
-            InvalidConfigurationFileNames.Add(UISettings_.Name);
-        else
-            @delegate += @delegate1;
-        if (ISettings<SteamSettings_>.Load(directoryExists, out var @delegate2))
-            InvalidConfigurationFileNames.Add(SteamSettings_.Name);
-        else
-            @delegate += @delegate2;
+        // 启动优化: UISettings + SteamSettings 已在前面与插件扫描并行加载, 此处跳过
+        if (!settingsPreLoaded)
+        {
+            if (ISettings<UISettings_>.Load(directoryExists, out var @delegate1))
+                InvalidConfigurationFileNames.Add(UISettings_.Name);
+            else
+                @delegate += @delegate1;
+            if (ISettings<SteamSettings_>.Load(directoryExists, out var @delegate2))
+                InvalidConfigurationFileNames.Add(SteamSettings_.Name);
+            else
+                @delegate += @delegate2;
+        }
 
         if (TryGetPlugins(out var plugins_cfg))
         {

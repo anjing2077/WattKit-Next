@@ -38,11 +38,17 @@
 		<ServerGarbageCollection>false</ServerGarbageCollection>
 		<RetainVMGarbageCollection>false</RetainVMGarbageCollection>
 		<ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+		<!-- 👇 启动性能优化 Wave3 -->
+		<TieredCompilation>true</TieredCompilation>
+		<TieredPGO>true</TieredPGO>
+		<ReadyToRun>true</ReadyToRun>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<!-- 👇 GC 配置 runtimeconfig.json -->
 		<RuntimeHostConfigurationOption Include="System.GC.HighMemoryPercent" Value="75" />
+		<!-- 👇 启动性能优化 Wave3: 线程池预热（减少首批任务排队延迟） -->
+		<RuntimeHostConfigurationOption Include="System.Threading.ThreadPool.MinThreads" Value="4" />
 	</ItemGroup>
 
 	<ItemGroup>

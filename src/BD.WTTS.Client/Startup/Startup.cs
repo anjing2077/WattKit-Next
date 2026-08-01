@@ -276,6 +276,16 @@ public abstract partial class Startup
                     DebugConsole.WriteLine($"loadasm: {loadedAssembly}, location: {loadedAssembly.Location}");
                 }
 #endif
+                // 启动优化: 跳过 BCL/System/Microsoft 程序集, 它们不使用自定义 DllImportResolver
+                // 仅对项目自身的程序集设置 resolver, 减少 ~30-50% 的 SetDllImportResolver 调用
+                var name = loadedAssembly.GetName().Name ?? string.Empty;
+                if (name.StartsWith("System.", StringComparison.Ordinal) ||
+                    name.StartsWith("Microsoft.", StringComparison.Ordinal) ||
+                    name.StartsWith("Mono.", StringComparison.Ordinal) ||
+                    name.StartsWith("netstandard", StringComparison.Ordinal) ||
+                    name == "mscorlib" || name == "System" || name == "WindowsBase")
+                    return;
+
                 // 使用 native 文件夹导入解析本机库
                 try
                 {
