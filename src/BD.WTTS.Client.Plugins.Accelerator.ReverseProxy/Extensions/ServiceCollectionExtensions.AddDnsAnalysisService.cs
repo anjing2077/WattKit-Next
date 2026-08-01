@@ -21,6 +21,10 @@ public static partial class ServiceCollectionExtensions
         services.TryAddSingleton<AsnBlacklist>();
         services.TryAddSingleton<DnsSecVerifier>();
 
+        // -- Phase 4/5 新增: DNSSEC 完整信任链验证器 (DNSKEY + DS SHA256 摘要 + RRSIG RSA/ECDsa.VerifyData) --
+        //     纯 BCL System.Security.Cryptography, 0 新依赖; 1.5s 硬超时; 绝不阻塞启动
+        services.TryAddSingleton<DnsSecChainVerifier>();
+
         // DnsResultVerifier 依赖上方 2 个可选服务 (参数可空)
         services.AddSingleton<DnsResultVerifier>();
         services.AddSingleton<DnsParallelResolver>();
