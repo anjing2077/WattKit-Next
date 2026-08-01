@@ -23,25 +23,57 @@ internal sealed class DnsSocketResolver
 {
     const string TAG = "DnsSocket";
 
-    // —— DoH 服务器矩阵（硬编码 IP，绕过系统 DNS 鸡生蛋问题）——
-    // (IP, SNI 域名, HTTP path)
-    static readonly (string Ip, string Sni, string Path)[] DohServers =
+    // —— DoH 服务器定义（SNI + Path + 硬编码 IPv4/IPv6 种子 IP）——
+    // 种子 IP 是启动时的 fallback；运行中可被 DnsServerIpUpdater 动态刷新
+    internal sealed class DohServerDef
     {
-        ("1.1.1.1",     "cloudflare-dns.com", "/dns-query"), // Cloudflare
-        ("8.8.8.8",     "dns.google",         "/dns-query"), // Google
-        ("223.5.5.5",   "dns.alidns.com",     "/dns-query"), // Alibaba
+        public required string Sni { get; init; }
+        public required string Path { get; init; }
+        public string[] SeedIPv4 { get; init; } = Array.Empty<string>();
+        public string[] SeedIPv6 { get; init; } = Array.Empty<string>();
+        public string Label => $"doh-{Sni}";
+    }
+
+    internal sealed class DotServerDef
+    {
+        public required string Sni { get; init; }
+        public string[] SeedIPv4 { get; init; } = Array.Empty<string>();
+        public string[] SeedIPv6 { get; init; } = Array.Empty<string>();
+        public string Label => $"dot-{Sni}";
+    }
+
+    // 种子 IP 来源：官方文档公开的 Anycast 地址
+    static readonly DohServerDef[] DohServers =
+    {
+        new() { Sni = "cloudflare-dns.com", Path = "/dns-query",
+            SeedIPv4 = new[] { "1.1.1.1", "1.0.0.1" },
+            SeedIPv6 = new[] { "2606:4700:4700::1111", "2606:4700:4700::1001" } },
+        new() { Sni = "dns.google", Path = "/dns-query",
+            SeedIPv4 = new[] { "8.8.8.8", "8.8.4.4" },
+            SeedIPv6 = new[] { "2001:4860:4860::8888", "2001:4860:4860::8844" } },
+        new() { Sni = "dns.alidns.com", Path = "/dns-query",
+            SeedIPv4 = new[] { "223.5.5.5", "223.6.6.6" },
+            SeedIPv6 = new[] { "2400:3200::1", "2400:3200:baba::1" } },
     };
 
-    // —— DoT 服务器矩阵（硬编码 IP）——
-    // (IP, SNI 域名)
-    static readonly (string Ip, string Sni)[] DotServers =
+    static readonly DotServerDef[] DotServers =
     {
-        ("1.1.1.1", "cloudflare-dns.com"), // Cloudflare DoT
-        ("9.9.9.9", "dns.quad9.net"),      // Quad9 DoT (threat intel)
+        new() { Sni = "cloudflare-dns.com",
+            SeedIPv4 = new[] { "1.1.1.1" },
+            SeedIPv6 = new[] { "2606:4700:4700::1111" } },
+        new() { Sni = "dns.quad9.net",
+            SeedIPv4 = new[] { "9.9.9.9", "149.112.112.112" },
+            SeedIPv6 = new[] { "2620:fe::fe", "2620:fe::9" } },
     };
+
+    // —— 动态 IP 更新（线程安全）——
+    // 启动时用 Seed IP；DnsServerIpUpdater 可在后台调用 UpdateServerIps() 刷新
+    static readonly ConcurrentDictionary<string, string[]> s_runtimeIPv4 = new();
+    static readonly ConcurrentDictionary<string, string[]> s_runtimeIPv6 = new();
 
     /// <summary>
     /// 并行查询所有 DoH + DoT 通道，返回每个通道的 IP 结果。
+    /// IPv6 查询时优先用 IPv6 地址连服务器，回退 IPv4。
     /// 调用方（DnsParallelResolver）负责超时控制。
     /// </summary>
     public async Task<(string ChannelId, IPAddress[] Addresses)[]> QueryAllSocketChannelsAsync(
@@ -50,20 +82,35 @@ internal sealed class DnsSocketResolver
         var qtype = isIPv6 ? DnsWireCodec.QTYPE_AAAA : DnsWireCodec.QTYPE_A;
         var query = DnsWireCodec.BuildQuery(domain, qtype);
 
-        var tasks = new List<Task<(string, IPAddress[])>>(DohServers.Length + DotServers.Length);
+        var tasks = new List<Task<(string, IPAddress[])>>(DohServers.Length * 2 + DotServers.Length * 2);
 
-        // DoH 通道
-        foreach (var (ip, sni, path) in DohServers)
+        // DoH 通道 — 每个服务器发 IPv4 + IPv6（如果有的话）
+        foreach (var def in DohServers)
         {
-            var capturedIp = ip; var capturedSni = sni; var capturedPath = path;
-            tasks.Add(QueryDohAsync(capturedIp, capturedSni, capturedPath, query, capturedIp, ct));
+            var ipsV4 = GetServerIps(def.Sni, def.SeedIPv4, isV6: false);
+            foreach (var ip in ipsV4)
+            {
+                var capturedIp = ip; var capturedSni = def.Sni; var capturedPath = def.Path;
+                tasks.Add(QueryDohAsync(capturedIp, capturedSni, capturedPath, query, $"doh-v4-{capturedIp}", ct));
+            }
+            if (!isIPv6) continue; // 查 A 记录时不需要从 IPv6 服务器查
+            var ipsV6 = GetServerIps(def.Sni, def.SeedIPv6, isV6: true);
+            foreach (var ip in ipsV6)
+            {
+                var capturedIp = ip; var capturedSni = def.Sni; var capturedPath = def.Path;
+                tasks.Add(QueryDohAsync(capturedIp, capturedSni, capturedPath, query, $"doh-v6-{capturedIp}", ct));
+            }
         }
 
         // DoT 通道
-        foreach (var (ip, sni) in DotServers)
+        foreach (var def in DotServers)
         {
-            var capturedIp = ip; var capturedSni = sni;
-            tasks.Add(QueryDotAsync(capturedIp, capturedSni, query, $"dot-{capturedIp}", ct));
+            var ipsV4 = GetServerIps(def.Sni, def.SeedIPv4, isV6: false);
+            foreach (var ip in ipsV4)
+            {
+                var capturedIp = ip; var capturedSni = def.Sni;
+                tasks.Add(QueryDotAsync(capturedIp, capturedSni, query, $"dot-v4-{capturedIp}", ct));
+            }
         }
 
         // WhenAll 永不抛异常（每个通道内部吞异常）
@@ -74,16 +121,36 @@ internal sealed class DnsSocketResolver
         {
             var fallbackQuery = DnsWireCodec.BuildQuery(domain, DnsWireCodec.QTYPE_A);
             var fallbackTasks = new List<Task<(string, IPAddress[])>>(DohServers.Length);
-            foreach (var (ip, sni, path) in DohServers)
+            foreach (var def in DohServers)
             {
-                var cIp = ip; var cSni = sni; var cPath = path;
-                fallbackTasks.Add(QueryDohAsync(cIp, cSni, cPath, fallbackQuery, $"{cIp}-fb", ct));
+                var ipsV4 = GetServerIps(def.Sni, def.SeedIPv4, isV6: false);
+                if (ipsV4.Length == 0) continue;
+                var cIp = ipsV4[0]; var cSni = def.Sni; var cPath = def.Path;
+                fallbackTasks.Add(QueryDohAsync(cIp, cSni, cPath, fallbackQuery, $"doh-fb-{cIp}", ct));
             }
             var fbResults = await Task.WhenAll(fallbackTasks).ConfigureAwait(false);
             return results.Concat(fbResults).ToArray();
         }
 
         return results;
+    }
+
+    /// <summary>获取服务器 IP：优先用动态更新的，回退到种子 IP</summary>
+    string[] GetServerIps(string sni, string[] seedIps, bool isV6)
+    {
+        var dict = isV6 ? s_runtimeIPv6 : s_runtimeIPv4;
+        if (dict.TryGetValue(sni, out var dynamicIps) && dynamicIps.Length > 0)
+            return dynamicIps;
+        return seedIps;
+    }
+
+    /// <summary>动态更新服务器 IP（由 DnsServerIpUpdater 后台调用）</summary>
+    public static void UpdateServerIps(string sni, string[] ipv4, string[]? ipv6 = null)
+    {
+        if (ipv4 != null && ipv4.Length > 0)
+            s_runtimeIPv4[sni] = ipv4;
+        if (ipv6 != null && ipv6.Length > 0)
+            s_runtimeIPv6[sni] = ipv6;
     }
 
     // ===== DoH (RFC 8484) =====
