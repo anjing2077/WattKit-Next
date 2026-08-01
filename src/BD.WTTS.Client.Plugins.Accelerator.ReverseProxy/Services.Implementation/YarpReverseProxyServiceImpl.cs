@@ -23,9 +23,11 @@ sealed partial class YarpReverseProxyServiceImpl : ReverseProxyServiceImpl, IRev
         ICertificateManager certificateManager,
         // -- Phase 3/5 新增: L3.1 AsnBlacklist(可选) + L3.2 DnsSecVerifier(可选) --
         AsnBlacklist? asnBlacklist = null,
-        DnsSecVerifier? dnsSecVerifier = null)
+        DnsSecVerifier? dnsSecVerifier = null,
+        // -- Phase 5/5 新增: DNS 安全监控器 (UI 告警层) --
+        DnsSecurityMonitor? dnsSecurityMonitor = null)
         : base(dnsAnalysisServiceImpl, dnsDohAnalysisService, dnsParallelResolver, dnsResultVerifier,
-               asnBlacklist, dnsSecVerifier, loggerFactory)
+               asnBlacklist, dnsSecVerifier, dnsSecurityMonitor, loggerFactory)
     {
         this.ipc = ipc;
         platformService = GetIPCService<IPCPlatformService>(nameof(platformService));

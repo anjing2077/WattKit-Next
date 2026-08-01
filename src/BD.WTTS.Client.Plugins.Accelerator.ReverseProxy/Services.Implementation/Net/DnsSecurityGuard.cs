@@ -21,17 +21,20 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
     readonly IDnsAnalysisService _inner;      // 官方 SwitchImpl（策略: UseDoh? DoH : UDP）
     readonly DnsParallelResolver _parallel;   // L2: 5 通道并行
     readonly DnsResultVerifier _verifier;     // L3: 3 层过滤 + L3.3 锚点
+    readonly DnsSecurityMonitor? _monitor;    // Phase 5/5: UI 告警层事件上报
     readonly ILogger? _logger;
 
     public DnsSecurityGuard(
         IDnsAnalysisService inner,
         DnsParallelResolver parallel,
         DnsResultVerifier verifier,
+        DnsSecurityMonitor? monitor = null,
         ILoggerFactory? loggerFactory = null)
     {
         _inner = inner;
         _parallel = parallel;
         _verifier = verifier;
+        _monitor = monitor;
         _logger = loggerFactory?.CreateLogger(TAG);
     }
 
@@ -85,6 +88,15 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
         {
             _logger?.LogWarning("DNS MALICIOUS BLOCK host={host} diag={diag}",
                 hostNameOrAddress, verdict.Diagnostic);
+            _monitor?.Record(new DnsSecurityEvent
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                Host = hostNameOrAddress,
+                Verdict = verdict.Overall,
+                Diagnostic = verdict.Diagnostic,
+                BlockedIps = string.Join(",", verdict.BlocklistedIps.Select(x => x.ToString())),
+                VotingQuorum = verdict.VotingQuorum,
+            });
             yield break;
         }
 
@@ -100,6 +112,19 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
             _logger?.LogDebug("DNS {level} host={host} diag={diag}",
                 verdict.Overall, hostNameOrAddress, verdict.Diagnostic);
         }
+
+        // Phase 5/5: 上报到 UI 监控层 (绿/黄也记录, 便于统计)
+        _monitor?.Record(new DnsSecurityEvent
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Host = hostNameOrAddress,
+            Verdict = verdict.Overall,
+            Diagnostic = verdict.Diagnostic,
+            BlockedIps = verdict.BlocklistedIps.Length > 0
+                ? string.Join(",", verdict.BlocklistedIps.Select(x => x.ToString()))
+                : null,
+            VotingQuorum = verdict.VotingQuorum,
+        });
 
         foreach (var ip in verdict.RecommendedIps)
         {

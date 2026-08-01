@@ -25,6 +25,9 @@ public static partial class ServiceCollectionExtensions
         //     纯 BCL System.Security.Cryptography, 0 新依赖; 1.5s 硬超时; 绝不阻塞启动
         services.TryAddSingleton<DnsSecChainVerifier>();
 
+        // -- Phase 5/5 新增: DNS 安全实时监控器 (UI 告警层数据源, 线程安全环形缓冲区) --
+        services.TryAddSingleton<DnsSecurityMonitor>();
+
         // DnsResultVerifier 依赖上方 2 个可选服务 (参数可空)
         services.AddSingleton<DnsResultVerifier>();
         services.AddSingleton<DnsParallelResolver>();

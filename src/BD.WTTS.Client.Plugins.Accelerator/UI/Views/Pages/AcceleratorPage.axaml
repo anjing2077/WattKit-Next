@@ -440,6 +440,7 @@
                         Theme="{StaticResource TabStripStyle}">
                         <TabStripItem Content="{Binding Path=Res.CommunityFix_FlowStatistics, Mode=OneWay, Source={x:Static s:ResourceService.Current}}" />
                         <TabStripItem Content="{Binding Path=Res.CommunityFix_Services, Mode=OneWay, Source={x:Static s:ResourceService.Current}}" />
+                        <TabStripItem Content="DNS 安全" />
                     </TabStrip>
                     <StackPanel
                         Grid.Row="0"
@@ -536,6 +537,8 @@
                             </Border>
                         </Grid>
 
+                        <!-- Phase 5/5: DNS 安全监控面板 -->
+                        <spp:DnsSecurityStatusControl />
 
                         <!--<TabItem Header="加速日志">
 

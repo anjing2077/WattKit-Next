@@ -13,18 +13,19 @@ abstract class ReverseProxyServiceImpl : IReverseProxySettings
         // -- Phase 3/5 新增: L3.1 扩展 ASN 黑名单 + L3.2 扩展 DNSSEC 加权（两个参数均为可选注入, 无注册也不报错） --
         AsnBlacklist? asnBlacklist = null,
         DnsSecVerifier? dnsSecVerifier = null,
+        // -- Phase 5/5 新增: DNS 安全监控器 (UI 告警层) --
+        DnsSecurityMonitor? dnsSecurityMonitor = null,
         ILoggerFactory? loggerFactory = null)
     {
         // 1. 官方原有策略 Switch：UseDoh ? DoH : UDP
         var inner = new DnsAnalysisServiceSwitchImpl(this, dnsAnalysisServiceImpl, dnsDohAnalysisService);
 
-        // 2. DNS 污染防护 Phase 2/5：L2 并行 + L3 三层过滤 + L3.3 指纹锚点（装饰器模式）
+        // 2. DNS 污染防护 Phase 2-5：L2 并行 + L3 三层过滤 + L3.3 指纹锚点 + L3.1 ASN + L3.2 DNSSEC + L5 UI监控
         //    - 绝不抛异常到上层
         //    - 自定义 dnsServers / 纯 IP 时自动跳过，走官方原逻辑
         //    - 红色(MaliciousBlock)直接 yield break，不把污染 IP 交给 YARP
-        // 3. Phase 3/5：可选传入 AsnBlacklist/DnsSecVerifier 直接透传到 DnsResultVerifier 构造（通过属性不行，ctor 已注入）
-        //    → 这里我们不把 DnsSecurityGuard 里传这俩(它只调用 _verifier.VerifyAsync 即可, _verifier 内部已持有 via DI ctor 注入)
-        DnsAnalysis = new DnsSecurityGuard(inner, dnsParallelResolver, dnsResultVerifier, loggerFactory);
+        //    - Phase 5: DnsSecurityMonitor 上报事件到 UI 告警层
+        DnsAnalysis = new DnsSecurityGuard(inner, dnsParallelResolver, dnsResultVerifier, dnsSecurityMonitor, loggerFactory);
     }
 
     public IDnsAnalysisService DnsAnalysis { get; }
