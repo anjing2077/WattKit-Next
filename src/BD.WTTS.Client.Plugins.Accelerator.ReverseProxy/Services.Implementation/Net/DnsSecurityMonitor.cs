@@ -17,6 +17,19 @@ public sealed class DnsSecurityEvent
     public string? BlockedIps { get; init; }
     public int VotingQuorum { get; init; }
     public int DnssecWeight { get; init; }
+
+    /// <summary>Phase 7: 每个通道的结果快照（ChannelId + 成功/失败 + 延迟 + IP 摘要）</summary>
+    public DnsChannelSnapshot[]? ChannelSnapshots { get; init; }
+}
+
+/// <summary>单通道快照（Phase 7）</summary>
+public sealed class DnsChannelSnapshot
+{
+    public required string ChannelId { get; init; }
+    public bool IsSocketLevel { get; init; }
+    public bool IsSuccess { get; init; }
+    public long LatencyMs { get; init; }
+    public string? IpSummary { get; init; }
 }
 
 /// <summary>DNS 安全实时监控器 (线程安全单例)</summary>
@@ -31,6 +44,9 @@ internal sealed class DnsSecurityMonitor
     DateTimeOffset _lastEventTime = DateTimeOffset.MinValue;
     string? _lastHost;
     string? _lastDiagnostic;
+
+    // Phase 7: 通道级统计（ChannelId → (successCount, failCount, totalLatencyMs, lastIpSummary)）
+    readonly ConcurrentDictionary<string, (long Success, long Fail, long TotalLatencyMs, string? LastIpSummary, DateTimeOffset LastSeen)> _channelStats = new();
 
     /// <summary>记录一次 DNS 安全事件 (由 DnsSecurityGuard 调用, 绝不抛异常)</summary>
     public void Record(DnsSecurityEvent evt)
@@ -50,6 +66,24 @@ internal sealed class DnsSecurityMonitor
             Interlocked.Increment(ref _totalBlocked);
         else if (evt.Verdict == DnsVerdict.SuspiciousRed)
             Interlocked.Increment(ref _totalWarnings);
+
+        // Phase 7: 聚合通道级统计
+        if (evt.ChannelSnapshots != null)
+        {
+            foreach (var ch in evt.ChannelSnapshots)
+            {
+                _channelStats.AddOrUpdate(
+                    ch.ChannelId,
+                    // 新通道首次出现
+                    ch.IsSuccess
+                        ? (1, 0, ch.LatencyMs, ch.IpSummary, evt.Timestamp)
+                        : (0, 1, 0, ch.IpSummary, evt.Timestamp),
+                    // 已存在通道：累加
+                    (_, existing) => ch.IsSuccess
+                        ? (existing.Success + 1, existing.Fail, existing.TotalLatencyMs + ch.LatencyMs, ch.IpSummary, evt.Timestamp)
+                        : (existing.Success, existing.Fail + 1, existing.TotalLatencyMs, ch.IpSummary, evt.Timestamp));
+            }
+        }
     }
 
     /// <summary>获取最近 N 条事件快照 (线程安全, 返回副本)</summary>
@@ -77,5 +111,44 @@ internal sealed class DnsSecurityMonitor
         _lastEventTime = DateTimeOffset.MinValue;
         _lastHost = null;
         _lastDiagnostic = null;
+        _channelStats.Clear();
     }
+
+    /// <summary>Phase 7: 获取通道级统计快照（按 ChannelId 排序）</summary>
+    public List<DnsChannelStat> GetChannelStats()
+    {
+        return _channelStats
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv =>
+            {
+                var (success, fail, totalLatency, lastIp, lastSeen) = kv.Value;
+                var total = success + fail;
+                return new DnsChannelStat
+                {
+                    ChannelId = kv.Key,
+                    IsSocketLevel = kv.Key.StartsWith("doh-", StringComparison.Ordinal)
+                                 || kv.Key.StartsWith("dot-", StringComparison.Ordinal),
+                    SuccessCount = success,
+                    FailCount = fail,
+                    AvgLatencyMs = success > 0 ? totalLatency / success : 0,
+                    SuccessRate = total > 0 ? (double)success / total : 0,
+                    LastIpSummary = lastIp,
+                    LastSeen = lastSeen,
+                };
+            })
+            .ToList();
+    }
+}
+
+/// <summary>Phase 7: 通道级统计快照（供 UI 展示）</summary>
+public sealed class DnsChannelStat
+{
+    public required string ChannelId { get; init; }
+    public bool IsSocketLevel { get; init; }
+    public long SuccessCount { get; init; }
+    public long FailCount { get; init; }
+    public long AvgLatencyMs { get; init; }
+    public double SuccessRate { get; init; }
+    public string? LastIpSummary { get; init; }
+    public DateTimeOffset LastSeen { get; init; }
 }

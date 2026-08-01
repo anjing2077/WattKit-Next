@@ -148,6 +148,67 @@
                 </StackPanel>
             </Border>
 
+            <!-- Phase 7: 通道级统计 -->
+            <Border
+                Padding="20,16"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="12">
+                    <TextBlock
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="7 通道解析状态" />
+                    <DataGrid
+                        AutoGenerateColumns="False"
+                        Background="Transparent"
+                        BorderThickness="0,1,0,0"
+                        BorderBrush="{DynamicResource CardBorderBrush}"
+                        CanUserSortColumns="False"
+                        FontSize="12"
+                        HeadersVisibility="Column"
+                        IsReadOnly="True"
+                        ItemsSource="{Binding ChannelStats}"
+                        MinHeight="80">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn
+                                Width="40"
+                                Binding="{Binding TypeIcon}"
+                                Header="类型" />
+                            <DataGridTextColumn
+                                Width="140"
+                                Binding="{Binding ChannelId}"
+                                Header="通道" />
+                            <DataGridTextColumn
+                                Width="70"
+                                Binding="{Binding SuccessCount}"
+                                Header="成功" />
+                            <DataGridTextColumn
+                                Width="70"
+                                Binding="{Binding FailCount}"
+                                Header="失败" />
+                            <DataGridTextColumn
+                                Width="70"
+                                Binding="{Binding SuccessRate}"
+                                Header="成功率" />
+                            <DataGridTextColumn
+                                Width="80"
+                                Binding="{Binding AvgLatency}"
+                                Header="平均延迟" />
+                            <DataGridTextColumn
+                                Width="*"
+                                Binding="{Binding LastIp}"
+                                Header="最近 IP" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <TextBlock
+                        FontSize="11"
+                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                        Text="🔒 Socket 级 (硬编码 IP, 免疫 DNS 污染, 权重×2)  🔓 传统通道 (权重×1)" />
+                </StackPanel>
+            </Border>
+
             <!-- 拦截记录列表 -->
             <Border
                 Padding="20,16"
@@ -223,7 +284,7 @@
                         FontWeight="SemiBold"
                         Text="5 层防护架构" />
                     <TextBlock FontSize="12" Text="L1: 用户自定义 DNS 服务器 (DoH/UDP)" />
-                    <TextBlock FontSize="12" Text="L2: 5 通道并行解析 (系统 UDP + 4 个 DoH) + 2.2s 硬超时" />
+                    <TextBlock FontSize="12" Text="L2: 7 通道并行解析 (2 传统 + 5 Socket 级 DoH/DoT) + 2.2s 硬超时 + 加权投票" />
                     <TextBlock FontSize="12" Text="L3.1: RFC5735/6890 Bogon/Martian 黑名单 (25 条 CIDR) + ASN 450 种子 (Tor/C&C/代理 VPS)" />
                     <TextBlock FontSize="12" Text="L3.2: 多数投票 (quorum/2+1) + DNSSEC RRSIG RSA/ECDsa 密码学验签加权" />
                     <TextBlock FontSize="12" Text="L3.3: 30 天指纹锚点 (SHA-256 信任记忆, 连续 2 次建立)" />

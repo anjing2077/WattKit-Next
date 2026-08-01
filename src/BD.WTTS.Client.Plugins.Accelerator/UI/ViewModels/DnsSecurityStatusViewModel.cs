@@ -38,12 +38,14 @@ public sealed partial class DnsSecurityStatusViewModel : ViewModelBase, IDisposa
     [Reactive] public string LastHost { get; set; } = "-";
     [Reactive] public string LastDiagnostic { get; set; } = "-";
     [Reactive] public IReadOnlyList<DnsSecurityEventRow> RecentEvents { get; set; } = Array.Empty<DnsSecurityEventRow>();
+    [Reactive] public IReadOnlyList<DnsChannelStatRow> ChannelStats { get; set; } = Array.Empty<DnsChannelStatRow>();
 
     public void Refresh()
     {
         if (_monitor == null) return;
         var stats = _monitor.GetStats();
         var events = _monitor.GetRecentEvents(30);
+        var channelStats = _monitor.GetChannelStats();
 
         TotalQueries = stats.TotalQueries;
         TotalBlocked = stats.TotalBlocked;
@@ -59,6 +61,18 @@ public sealed partial class DnsSecurityStatusViewModel : ViewModelBase, IDisposa
             BD.WTTS.Services.Implementation.DnsVerdict.MaliciousBlock => ("已拦截 (恶意 ASN/Bogon)", "#ef4444", "🚫"),
             _ => ("未知", "#808080", "❓"),
         };
+
+        ChannelStats = channelStats.Select(c => new DnsChannelStatRow
+        {
+            ChannelId = c.ChannelId,
+            IsSocketLevel = c.IsSocketLevel,
+            TypeIcon = c.IsSocketLevel ? "🔒" : "🔓",
+            SuccessCount = c.SuccessCount,
+            FailCount = c.FailCount,
+            AvgLatency = c.AvgLatencyMs > 0 ? $"{c.AvgLatencyMs}ms" : "-",
+            SuccessRate = c.SuccessRate > 0 ? $"{c.SuccessRate * 100:F0}%" : "-",
+            LastIp = c.LastIpSummary ?? "-",
+        }).ToList();
 
         RecentEvents = events.Select(e => new DnsSecurityEventRow
         {
@@ -98,4 +112,16 @@ public sealed class DnsSecurityEventRow
     public string Diagnostic { get; set; } = "";
     public int Quorum { get; set; }
     public string BlockedIps { get; set; } = "";
+}
+
+public sealed class DnsChannelStatRow
+{
+    public string ChannelId { get; set; } = "";
+    public bool IsSocketLevel { get; set; }
+    public string TypeIcon { get; set; } = "";
+    public long SuccessCount { get; set; }
+    public long FailCount { get; set; }
+    public string AvgLatency { get; set; } = "-";
+    public string SuccessRate { get; set; } = "-";
+    public string LastIp { get; set; } = "-";
 }

@@ -96,6 +96,7 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
                 Diagnostic = verdict.Diagnostic,
                 BlockedIps = string.Join(",", verdict.BlocklistedIps.Select(x => x.ToString())),
                 VotingQuorum = verdict.VotingQuorum,
+                ChannelSnapshots = BuildChannelSnapshots(verdict),
             });
             yield break;
         }
@@ -124,6 +125,7 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
                 ? string.Join(",", verdict.BlocklistedIps.Select(x => x.ToString()))
                 : null,
             VotingQuorum = verdict.VotingQuorum,
+            ChannelSnapshots = BuildChannelSnapshots(verdict),
         });
 
         foreach (var ip in verdict.RecommendedIps)
@@ -156,4 +158,21 @@ internal sealed class DnsSecurityGuard : IDnsAnalysisService
 
     public Task<IPAddress?> GetHostIpv6AddresAsync()
         => _inner.GetHostIpv6AddresAsync();
+
+    // Phase 7: 构建通道快照供 Monitor 统计
+    static DnsChannelSnapshot[]? BuildChannelSnapshots(DnsSecurityVerdict verdict)
+    {
+        if (verdict.ChannelSnapshots == null || verdict.ChannelSnapshots.Length == 0)
+            return null;
+        return verdict.ChannelSnapshots.Select(ch => new DnsChannelSnapshot
+        {
+            ChannelId = ch.ChannelId,
+            IsSocketLevel = ch.IsSocketLevel,
+            IsSuccess = ch.IsSuccess,
+            LatencyMs = ch.LatencyMs,
+            IpSummary = ch.Addresses.Length > 0
+                ? string.Join(", ", ch.Addresses.Select(a => a.ToString()))
+                : null,
+        }).ToArray();
+    }
 }

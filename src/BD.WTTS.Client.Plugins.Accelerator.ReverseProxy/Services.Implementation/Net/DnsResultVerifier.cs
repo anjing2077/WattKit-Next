@@ -184,32 +184,36 @@ internal sealed class DnsResultVerifier
         }
 
         // —— L3.2 多数投票过滤器：统计每个 IP 在多少个成功通道中出现 + DNSSEC 加权 ——
+        // Phase 6/7: Socket 级通道（硬编码 IP，免疫系统 DNS 污染）权重 = 2，传统通道权重 = 1
+        // 这样即使 udp-system 和 doh-user 都被污染返回相同假 IP，
+        // 5 个 Socket 通道的 2×5=10 票仍远超 2×1=2 票，保证真 IP 过半数
         var ipVote = new Dictionary<string, (IPAddress Ip, int Votes, List<string> Channels)>(StringComparer.Ordinal);
-        int quorum = 0;
+        int totalWeight = 0;
         foreach (var ch in cleanChannels)
         {
             if (!ch.IsSuccess) continue;
-            quorum++;
+            int channelWeight = ch.IsSocketLevel ? 2 : 1;
+            totalWeight += channelWeight;
             var seenThisChannel = new HashSet<string>(StringComparer.Ordinal);
             foreach (var ip in ch.Addresses)
             {
                 var key = ip.ToString();
-                if (!seenThisChannel.Add(key)) continue; // 同一通道重复 IP 只算 1 票
+                if (!seenThisChannel.Add(key)) continue; // 同一通道重复 IP 只算 1 次
                 if (!ipVote.TryGetValue(key, out var slot))
                 {
                     slot = (ip, dnssecWeight, new List<string>());
                     ipVote[key] = slot;
                 }
-                slot.Votes++;
+                slot.Votes += channelWeight; // Phase 6/7: 加权投票
                 slot.Channels.Add(ch.ChannelId);
             }
         }
 
-        // 最终候选 = 得到过半数票的 IP；若所有通道失败则回退 0 IP
+        // 最终候选 = 得到过半数加权票的 IP；若所有通道失败则回退 0 IP
         IPAddress[] majorityIps;
-        int adjustedQuorum = quorum + dnssecWeight; // 把 DNSSEC 权重也算入 quorum, 避免强签名域被误判
+        int adjustedQuorum = totalWeight + dnssecWeight; // 把 DNSSEC 权重也算入 quorum
         int majorityThreshold = adjustedQuorum <= 1 ? 1 : (adjustedQuorum / 2) + 1;
-        if (quorum == 0 && !asnHardBlock)
+        if (totalWeight == 0 && !asnHardBlock)
         {
             majorityIps = Array.Empty<IPAddress>();
         }
@@ -238,7 +242,7 @@ internal sealed class DnsResultVerifier
                 RecommendedIps = Array.Empty<IPAddress>(),
                 BlocklistedIps = blocked.ToArray(),
                 ChannelSnapshots = cleanChannels,
-                VotingQuorum = quorum,
+                VotingQuorum = totalWeight,
                 Diagnostic = $"ASN-SEED-HIT reason={asnBlockReason} blocked={blocked.Count}",
             };
         }
@@ -250,22 +254,22 @@ internal sealed class DnsResultVerifier
         {
             overall = _anchor.JudgeAgainstAnchor(domain, majorityIps);
             string dnssecStr = dnssecWeight > 0 ? $",dnssecWeight={dnssecWeight}" : "";
-            diag = $"quorum={quorum},threshold={majorityThreshold},ips={majorityIps.Length},anchor={overall}{dnssecStr}";
+            diag = $"weight={totalWeight},threshold={majorityThreshold},ips={majorityIps.Length},anchor={overall}{dnssecStr}";
         }
         else if (blocked.Count > 0)
         {
             overall = DnsVerdict.SuspiciousRed;
-            diag = $"quorum={quorum},blocked={blocked.Count} bogon/martian dropped";
+            diag = $"weight={totalWeight},blocked={blocked.Count} bogon/martian dropped";
         }
-        else if (quorum == 0)
+        else if (totalWeight == 0)
         {
             overall = DnsVerdict.MaliciousBlock; // 所有通道都失败 = 认为当前网络不安全，阻断
-            diag = "all 5 channels failed, pollution suspected";
+            diag = "all 7 channels failed, pollution suspected";
         }
         else
         {
             overall = DnsVerdict.LikelyOkYellow;
-            diag = $"quorum={quorum},no anchor, ips={majorityIps.Length}";
+            diag = $"weight={totalWeight},no anchor, ips={majorityIps.Length}";
         }
 
         return new DnsSecurityVerdict
@@ -274,7 +278,7 @@ internal sealed class DnsResultVerifier
             RecommendedIps = majorityIps,
             BlocklistedIps = blocked.ToArray(),
             ChannelSnapshots = cleanChannels,
-            VotingQuorum = quorum,
+            VotingQuorum = totalWeight,
             Diagnostic = diag,
         };
     }
