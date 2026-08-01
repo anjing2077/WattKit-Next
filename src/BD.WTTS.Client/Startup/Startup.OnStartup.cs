@@ -39,10 +39,22 @@ partial class Startup // OnStartup
         });
 
 #if (WINDOWS || MACCATALYST || MACOS || LINUX) && !(IOS || ANDROID)
+        // 启动优化: SteamProgramPath 检测移到后台, 避免阻塞 UI 线程 (原同步调用 Ioc.Get<ISteamService>())
         if (string.IsNullOrWhiteSpace(SteamSettings.SteamProgramPath.Value))
         {
-            SteamSettings.SteamProgramPath.Default =
-                Ioc.Get<ISteamService>().SteamProgramPath;
+            Task2.InBackground(() =>
+            {
+                try
+                {
+                    var steamPath = Ioc.Get<ISteamService>().SteamProgramPath;
+                    if (!string.IsNullOrWhiteSpace(steamPath))
+                        SteamSettings.SteamProgramPath.Default = steamPath;
+                }
+                catch (Exception ex)
+                {
+                    GlobalExceptionHandler.Handler(ex, "StartupOpt.SteamProgramPath");
+                }
+            });
         }
 #endif
     }
